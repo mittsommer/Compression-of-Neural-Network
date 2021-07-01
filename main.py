@@ -1,50 +1,26 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
 import torch.nn.functional as F
-from torchvision.datasets import CIFAR10
-from torchvision.datasets import MNIST
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-import numpy as np
-from matplotlib import pyplot as plt
-import pandas as pd
 from torch.autograd.functional import hessian
-SEED = 0
-torch.manual_seed(SEED)
-torch.cuda.manual_seed(SEED)
-device = torch.device('cpu' if torch.cuda.is_available() else "cpu")
-CFG = {
-    'batch_size': 128,
-    'learning_rate': 0.001,
-    'epoch': 3,
-    'lambda': 1
-}
+import argparse
+from utils import setup, getModel, getData
+import pyhessian
+import seaborn as sns
+import os
 
-transformer = torchvision.transforms.Compose([torchvision.transforms.ToTensor()])
-train_data = MNIST('./data', train=True, download=True, transform=transformer)
-test_data = MNIST('./data', train=False, download=True, transform=transformer)
-train_loader = DataLoader(train_data, batch_size=CFG['batch_size'], shuffle=True)
-test_loader = DataLoader(test_data, batch_size=CFG['batch_size'], shuffle=True)
-
-
-class MyModel(nn.Module):
-    def __init__(self):
-        super(MyModel, self).__init__()
-        self.conv1 = nn.Conv2d(1, 6, 5, padding=0)
-        self.conv2 = nn.Conv2d(6, 16, 5, padding=0)
-        self.fc1 = nn.Linear(16 * 4 * 4, 10)
-
-    def forward(self, x):
-        x = F.max_pool2d(F.relu(self.conv1(x)), kernel_size=(2, 2))
-        x = F.max_pool2d(F.relu(self.conv2(x)), kernel_size=(2, 2))
-        x = x.view(x.size()[0], -1)
-        x = self.fc1(x)
-        return x
+parser = argparse.ArgumentParser()
+parser.add_argument("--batch_size", default=64, type=int)
+parser.add_argument("--learning_rate", default=0.001, type=float)
+parser.add_argument("--epoch", default=30, type=int)
+parser.add_argument("--l", default=0.9999, help="lambda", type=float)
+parser.add_argument("--device", default='cuda:0')
+parser.add_argument("--dataset", default='cifar10')
+parser.add_argument("--model", default='LeNet5')
+CFG = parser.parse_args()
 
 
-def train(epoch, loss_fig):
+def train(net, epoch):
     net.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data = data.to(device)
@@ -52,16 +28,15 @@ def train(epoch, loss_fig):
         optimizer.zero_grad()
         output = net.forward(data).to(device)
         loss, cross_entropy, curvature = my_loss_function(output, target)
-        loss_fig.append(loss)
         loss.backward()
         optimizer.step()
         if batch_idx % 100 == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)] loss: {:.6f} CrossEntropy: {:.6f} Curvature: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset), 100. * batch_idx / len(train_loader),
-                loss.item(), cross_entropy, curvature))
+            epoch, batch_idx * len(data), len(train_loader.dataset), 100. * batch_idx / len(train_loader),
+            loss.item(), cross_entropy, curvature))
 
 
-def test():
+def test(net):
     net.eval()
     test_loss = 0
     curvature = 0
@@ -86,25 +61,26 @@ def test():
     return test_loss, accuracy, crossentropy, curvature
 
 
+def eval_hessian(first_grad, model):
+    cnt = 0
+    for g in first_grad:
+        g_vector = g.contiguous().view(-1) if cnt == 0 else torch.cat([g_vector, g.contiguous().view(-1)])
+        cnt = 1
+    weights_number = g_vector.size(0)
+    hessian_matrix = torch.zeros(weights_number, weights_number)
+    for idx in range(weights_number):
+        second_grad = torch.autograd.grad(g_vector[idx], model.parameters(), create_graph=True, retain_graph=True)
+        cnt = 0
+        for g in second_grad:
+            g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
+            cnt = 1
+        hessian_matrix[idx] = g2
+    return hessian_matrix
+
+
 class MyLoss(nn.Module):
     def __init__(self):
         super().__init__()
-
-    def eval_hessian(self, loss_grad, model):
-        cnt = 0
-        for g in loss_grad:
-            g_vector = g.contiguous().view(-1) if cnt == 0 else torch.cat([g_vector, g.contiguous().view(-1)])
-            cnt = 1
-        l = g_vector.size(0)
-        hessian = torch.zeros(l, l)
-        for idx in range(l):
-            grad2rd = torch.autograd.grad(g_vector[idx], model.parameters(), create_graph=True)
-            cnt = 0
-            for g in grad2rd:
-                g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
-                cnt = 1
-            hessian[idx] = g2
-        return hessian
 
     def forward(self, x, y):
         cross_entropy = CrossEntropy(x, y)
@@ -115,39 +91,33 @@ class MyLoss(nn.Module):
         for i, parm in enumerate(net.parameters()):
             second_grad.append(torch.autograd.grad(first_grad[i], parm, retain_graph=True, create_graph=True,
                                                    grad_outputs=torch.ones_like(first_grad[i]))[0])
+        '''s = torch.tensor([]).to(device)
+        for i in second_grad:
+            s = torch.cat((s, i.view(-1)))
+        s = s.cpu().detach().numpy()'''
         # calculate sum((d2L/dw2)^2)
         curvature = torch.tensor(0)
         for i in second_grad:
-            curvature = curvature + torch.sum(torch.pow(i, 2))
+            curvature = curvature + torch.sum(torch.pow(i,2))
         # calculate whole Hesse matrix
-        # hesse = self.eval_hessian(first_grad,net)
-        # (evals,evecs) = torch.eig(hesse,eigenvectors=True)
-        #return cross_entropy * CFG['lambda'] + curvature * (1 - CFG['lambda']), cross_entropy, curvature
-        # curvature = torch.sum(hesse)
-        return cross_entropy * CFG['lambda'] + curvature * (1 - CFG['lambda']), cross_entropy, curvature
+        # hesse = eval_hessian(first_grad, net)
+        '''curvature = torch.sum(torch.pow(hesse, 2))'''
+        # (evals, evecs) = torch.eig(hesse,eigenvectors=True)
+        # return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy, curvature
+        return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy, curvature
 
 
 if __name__ == '__main__':
-    print(CFG)
-    log_csv = pd.read_csv('./log.csv')
-    net = MyModel().to(device)
-    optimizer = optim.Adam(net.parameters(), CFG['learning_rate'])
-    Loss_Fig = []
+    '''file = open('./log.log', 'a')
+    print(CFG, file=file)'''
+    device = setup(CFG.device)
+    train_loader, test_loader = getData(CFG.dataset, CFG.batch_size)
+    net = getModel(CFG.model, device)
+    optimizer = optim.Adam(net.parameters(), CFG.learning_rate)
     my_loss_function = MyLoss()
     CrossEntropy = nn.CrossEntropyLoss()
-    for epoch in range(CFG['epoch']):
-        train(epoch, Loss_Fig)
-    test_loss, accuracy, crossentropy, curvature = test()
-    '''log = pd.DataFrame(
-        [[CFG['batch_size'], CFG['learning_rate'], CFG['epoch'], CFG['lambda'], round(test_loss, 6),
-          round(crossentropy, 6), round(curvature,6), accuracy]],
-        columns=['batch_size', 'learning_rate', 'epoch', 'lambda', 'test_loss', 'crossentropy', 'curvature',
-                 'accuracy'])
-    log_csv = log_csv.append(log, ignore_index=True)
-    log_csv.to_csv('log.csv', index=False)'''
-    '''    
-    plt.plot(Loss)
-    plt.xlabel('batch_idx')
-    plt.ylabel('loss')
-    plt.savefig('./lambda={}.jpg'.format(CFG['lambda']))'''
-    # torch.save(net, 'lambda={}.pth'.format(CFG['lambda']))
+    for epoch in range(CFG.epoch):
+        train(net, epoch)
+    test_loss, accuracy, crossentropy, curvature = test(net)
+    # file.close()
+    torch.save(net.state_dict(), './model/{}_{}_l={}_{}.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch))

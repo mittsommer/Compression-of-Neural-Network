@@ -7,7 +7,7 @@ from torchvision.datasets import CIFAR10
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import numpy as np
-from MyModel import MyModel
+from Model_on_cifara10_170 import MyModel
 import pandas as pd
 from tensorboardX import SummaryWriter
 
@@ -21,7 +21,7 @@ except ModuleNotFoundError:
 
     matplotlib.use('agg')
     import matplotlib.pyplot as plt
-from utils import MSE_loss, LloydMaxQuantizer
+from maxlloyd_utils import MSE_loss, LloydMaxQuantizer
 
 SEED = 0
 torch.manual_seed(SEED)

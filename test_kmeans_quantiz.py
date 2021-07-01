@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from torchsummary import summary
 from kmeans_pytorch import kmeans, kmeans_predict
 
-from MyModel import *
+from Model_on_cifara10_170 import *
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
 

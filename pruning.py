@@ -1,20 +1,22 @@
 import torch
-import torch.nn as nn
-from kmeans_pytorch import kmeans, kmeans_predict
-import operator
+import torch.nn.utils.prune as prune
+from models import LeNet5, LeNet3
 import argparse
-from utils import getData, getModel, setup
+from utils import setup, getData, getModel
+import torch.nn as nn
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--level", default=16)
+parser.add_argument("--level", default=4)
 parser.add_argument("--batch_size", default=64, type=int)
 parser.add_argument("--learning_rate", default=0.001, type=float)
 parser.add_argument("--epoch", default=30, type=int)
-parser.add_argument("--l", default=0.9999, help="lambda", type=float)
+parser.add_argument("--l", default=1.0, help="lambda", type=float)
 parser.add_argument("--device", default='cuda:0')
 parser.add_argument("--dataset", default='cifar10')
 parser.add_argument("--model", default='LeNet5')
 parser.add_argument("--bits", default=8, type=int)
+
+parser.add_argument("--pruning_rate",default=0.4,type=float)
 CFG = parser.parse_args()
 
 
@@ -60,22 +62,6 @@ def test(net):
     return test_loss, accuracy, crossentropy, curvature
 
 
-def kmeans_quantize(net, level):
-    parm = net.parameters()
-    for i, p in enumerate(parm):
-        if i == 0:
-            weights = p.data.view(-1, 1)
-        else:
-            weights = torch.cat((weights, p.data.view(-1, 1)))
-    cluster_ids_x, cluster_centers = kmeans(X=weights, num_clusters=level, device=device, tol=0.0001)
-
-    parm_ = net.named_parameters()
-    for name, param in parm_:
-        netweight = operator.attrgetter(name)(net)
-        netweight_label = kmeans_predict(netweight.reshape(-1, 1), cluster_centers, device=device)
-        netweight_quanti = cluster_centers[netweight_label].reshape(netweight.size())
-        net_change = operator.attrgetter(name)(net)
-        net_change.data.copy_(nn.parameter.Parameter(netweight_quanti.type(torch.cuda.FloatTensor)))
 
 
 if __name__ == '__main__':
@@ -85,8 +71,28 @@ if __name__ == '__main__':
     net.load_state_dict(torch.load('./model/{}_{}_l={}_{}.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch)))
     my_loss_function = MyLoss()
     CrossEntropy = nn.CrossEntropyLoss()
+    pruning_rate = 0.6
+    log_file = open("./pruning_log/pruning_log_MNIST_{}.log".format(pruning_rate), "a")
+    # --------------Before pruning--------------
+    print('Before pruning:', file=log_file)
+    print('Before pruning:')
     test(net)
-    kmeans_quantize(net, CFG.level)
-    print("K-means level:{}, After k-means quantize:".format(CFG.level))
+    # ---------------pruning----------------------
+    parameters_to_prune = (
+        (net.conv1, 'weight'),
+        (net.conv2, 'weight'),
+        (net.fc1, 'weight'),
+        (net.fc2, 'weight'),
+    )
+    prune.global_unstructured(
+        parameters_to_prune,
+        pruning_method=prune.L1Unstructured,
+        amount=pruning_rate,
+    )
+    print('Pruning rate: {}'.format(pruning_rate), file=log_file)
+    print('Pruning rate: {}'.format(pruning_rate))
+    # ------------------After pruning---------------------
+    print('After pruning:', file=log_file)
+    print('After pruning:')
     test(net)
-    # torch.save(net, './lambda={}_q_{}bit.pth'.format(CFG.l, CFG.bit))
+    log_file.close()
