@@ -5,18 +5,19 @@ import torch.nn.functional as F
 from torch.autograd.functional import hessian
 import argparse
 from utils import setup, getModel, getData
+
 import pyhessian
 import seaborn as sns
 import os
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--batch_size", default=64, type=int)
+parser.add_argument("--batch_size", default=128, type=int)
 parser.add_argument("--learning_rate", default=0.001, type=float)
-parser.add_argument("--epoch", default=30, type=int)
-parser.add_argument("--l", default=0.9999, help="lambda", type=float)
+parser.add_argument("--epoch", default=10, type=int)
+parser.add_argument("--l", default=1.0, help="lambda", type=float)
 parser.add_argument("--device", default='cuda:0')
-parser.add_argument("--dataset", default='cifar10')
-parser.add_argument("--model", default='LeNet5')
+parser.add_argument("--dataset", default='MNIST')
+parser.add_argument("--model", default='LeNet3')
 CFG = parser.parse_args()
 
 
@@ -42,6 +43,7 @@ def test(net):
     curvature = 0
     crossentropy = 0
     correct = 0
+
     for data, target in test_loader:
         data = data.to(device)
         target = target.to(device)
@@ -52,6 +54,7 @@ def test(net):
         curvature += cu.item()
         pred = output.data.max(1, keepdim=True)[1]
         correct += pred.eq(target.data.view_as(pred)).sum().item()
+
     test_loss /= len(test_loader)
     accuracy = 100. * correct / len(test_loader.dataset)
     crossentropy = crossentropy / len(test_loader)
@@ -62,9 +65,10 @@ def test(net):
 
 
 def eval_hessian(first_grad, model):
+    # with torch.autograd.profiler.profile(use_cuda=True) as prof:
     cnt = 0
     for g in first_grad:
-        g_vector = g.contiguous().view(-1) if cnt == 0 else torch.cat([g_vector, g.contiguous().view(-1)])
+        g_vector = g.view(-1) if cnt == 0 else torch.cat([g_vector, g.view(-1)])
         cnt = 1
     weights_number = g_vector.size(0)
     hessian_matrix = torch.zeros(weights_number, weights_number)
@@ -100,16 +104,17 @@ class MyLoss(nn.Module):
         for i in second_grad:
             curvature = curvature + torch.sum(torch.pow(i,2))
         # calculate whole Hesse matrix
-        # hesse = eval_hessian(first_grad, net)
-        '''curvature = torch.sum(torch.pow(hesse, 2))'''
+        '''hesse = eval_hessian(first_grad, net)
+        curvature = torch.sum(torch.pow(hesse, 2))'''
         # (evals, evecs) = torch.eig(hesse,eigenvectors=True)
         # return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy, curvature
+
         return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy, curvature
 
 
 if __name__ == '__main__':
-    '''file = open('./log.log', 'a')
-    print(CFG, file=file)'''
+    file = open('./log.log', 'a')
+    print(CFG, file=file)
     device = setup(CFG.device)
     train_loader, test_loader = getData(CFG.dataset, CFG.batch_size)
     net = getModel(CFG.model, device)
@@ -119,5 +124,5 @@ if __name__ == '__main__':
     for epoch in range(CFG.epoch):
         train(net, epoch)
     test_loss, accuracy, crossentropy, curvature = test(net)
-    # file.close()
-    torch.save(net.state_dict(), './model/{}_{}_l={}_{}.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch))
+    file.close()
+    torch.save(net.state_dict(), './model/{}_{}_l={}_{}hesse.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch))

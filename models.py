@@ -5,9 +5,9 @@ import torch.nn.functional as F
 class LeNet3(nn.Module):
     def __init__(self):
         super(LeNet3, self).__init__()
-        self.conv1 = nn.Conv2d(1, 3, 5, padding=0)
-        self.conv2 = nn.Conv2d(3, 10, 5, padding=0)
-        self.fc1 = nn.Linear(10 * 4 * 4, 10)
+        self.conv1 = nn.Conv2d(1, 3, 5, padding=0, stride=2)
+        self.conv2 = nn.Conv2d(3, 6, 3, padding=0)
+        self.fc1 = nn.Linear(6 * 2 * 2, 10)
 
     def forward(self, x):
         x = F.max_pool2d(F.relu(self.conv1(x)), kernel_size=(2, 2))
