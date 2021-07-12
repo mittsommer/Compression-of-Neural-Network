@@ -36,6 +36,24 @@ def getModel(name, device):
     return net
 
 
+def eval_hessian(first_grad, model):
+    # with torch.autograd.profiler.profile(use_cuda=True) as prof:
+    cnt = 0
+    for g in first_grad:
+        g_vector = g.view(-1) if cnt == 0 else torch.cat([g_vector, g.view(-1)])
+        cnt = 1
+    weights_number = g_vector.size(0)
+    hessian_matrix = torch.zeros(weights_number, weights_number)
+    for idx in range(weights_number):
+        second_grad = torch.autograd.grad(g_vector[idx], model.parameters(), create_graph=True, retain_graph=True)
+        cnt = 0
+        for g in second_grad:
+            g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
+            cnt = 1
+        hessian_matrix[idx] = g2
+    return hessian_matrix
+
+
 '''def save_log():
     log_csv = pd.read_csv('./log.csv')
     log = pd.DataFrame(

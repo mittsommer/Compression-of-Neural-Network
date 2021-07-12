@@ -1,10 +1,12 @@
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.autograd.functional import hessian
 import argparse
-from utils import setup, getModel, getData
+from utils import *
 
 import pyhessian
 import seaborn as sns
@@ -13,15 +15,15 @@ import os
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch_size", default=128, type=int)
 parser.add_argument("--learning_rate", default=0.001, type=float)
-parser.add_argument("--epoch", default=10, type=int)
-parser.add_argument("--l", default=1.0, help="lambda", type=float)
+parser.add_argument("--epoch", default=50, type=int)
+parser.add_argument("--l", default=0.9999, help="lambda", type=float)
 parser.add_argument("--device", default='cuda:0')
 parser.add_argument("--dataset", default='MNIST')
 parser.add_argument("--model", default='LeNet3')
 CFG = parser.parse_args()
 
 
-def train(net, epoch):
+def train(net, epoch, loss_fig):
     net.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data = data.to(device)
@@ -31,10 +33,11 @@ def train(net, epoch):
         loss, cross_entropy, curvature = my_loss_function(output, target)
         loss.backward()
         optimizer.step()
-        if batch_idx % 100 == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)] loss: {:.6f} CrossEntropy: {:.6f} Curvature: {:.6f}'.format(
-            epoch, batch_idx * len(data), len(train_loader.dataset), 100. * batch_idx / len(train_loader),
-            loss.item(), cross_entropy, curvature))
+        loss_fig.append(loss)
+        # if batch_idx % 100 == 0:
+    print('Train Epoch: {} [{}/{} ({:.0f}%)] loss: {:.6f} CrossEntropy: {:.6f} Curvature: {:.6f}'.format(
+        epoch, batch_idx * len(data), len(train_loader.dataset), 100. * batch_idx / len(train_loader),
+        loss.item(), cross_entropy, curvature))
 
 
 def test(net):
@@ -43,7 +46,6 @@ def test(net):
     curvature = 0
     crossentropy = 0
     correct = 0
-
     for data, target in test_loader:
         data = data.to(device)
         target = target.to(device)
@@ -54,7 +56,6 @@ def test(net):
         curvature += cu.item()
         pred = output.data.max(1, keepdim=True)[1]
         correct += pred.eq(target.data.view_as(pred)).sum().item()
-
     test_loss /= len(test_loader)
     accuracy = 100. * correct / len(test_loader.dataset)
     crossentropy = crossentropy / len(test_loader)
@@ -62,24 +63,6 @@ def test(net):
     print('\nTest set: Avg. loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(test_loss, correct,
                                                                               len(test_loader.dataset), accuracy))
     return test_loss, accuracy, crossentropy, curvature
-
-
-def eval_hessian(first_grad, model):
-    # with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    cnt = 0
-    for g in first_grad:
-        g_vector = g.view(-1) if cnt == 0 else torch.cat([g_vector, g.view(-1)])
-        cnt = 1
-    weights_number = g_vector.size(0)
-    hessian_matrix = torch.zeros(weights_number, weights_number)
-    for idx in range(weights_number):
-        second_grad = torch.autograd.grad(g_vector[idx], model.parameters(), create_graph=True, retain_graph=True)
-        cnt = 0
-        for g in second_grad:
-            g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
-            cnt = 1
-        hessian_matrix[idx] = g2
-    return hessian_matrix
 
 
 class MyLoss(nn.Module):
@@ -91,38 +74,35 @@ class MyLoss(nn.Module):
         # calculate first order grad derivative of all weights
         first_grad = torch.autograd.grad(cross_entropy, net.parameters(), create_graph=True, retain_graph=True)
         # calculate second order grad derivative of every weight -- Hesse matrix diagonal
-        second_grad = []
+        '''second_grad = []
         for i, parm in enumerate(net.parameters()):
             second_grad.append(torch.autograd.grad(first_grad[i], parm, retain_graph=True, create_graph=True,
                                                    grad_outputs=torch.ones_like(first_grad[i]))[0])
-        '''s = torch.tensor([]).to(device)
-        for i in second_grad:
-            s = torch.cat((s, i.view(-1)))
-        s = s.cpu().detach().numpy()'''
-        # calculate sum((d2L/dw2)^2)
         curvature = torch.tensor(0)
         for i in second_grad:
-            curvature = curvature + torch.sum(torch.pow(i,2))
+            curvature = curvature + torch.sum(torch.pow(i,2))'''
         # calculate whole Hesse matrix
-        '''hesse = eval_hessian(first_grad, net)
-        curvature = torch.sum(torch.pow(hesse, 2))'''
-        # (evals, evecs) = torch.eig(hesse,eigenvectors=True)
-        # return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy, curvature
-
+        hesse = eval_hessian(first_grad, net)
+        curvature = torch.sum(torch.pow(hesse, 2))
+        # curvature = torch.tensor(0)
         return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy, curvature
 
 
 if __name__ == '__main__':
-    file = open('./log.log', 'a')
-    print(CFG, file=file)
+    # file = open('0.999.log', 'a')
+    print(CFG)
     device = setup(CFG.device)
     train_loader, test_loader = getData(CFG.dataset, CFG.batch_size)
     net = getModel(CFG.model, device)
     optimizer = optim.Adam(net.parameters(), CFG.learning_rate)
     my_loss_function = MyLoss()
     CrossEntropy = nn.CrossEntropyLoss()
+    Loss_Fig = []
     for epoch in range(CFG.epoch):
-        train(net, epoch)
-    test_loss, accuracy, crossentropy, curvature = test(net)
-    file.close()
-    torch.save(net.state_dict(), './model/{}_{}_l={}_{}hesse.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch))
+        train(net, epoch, Loss_Fig)
+        test_loss, accuracy, crossentropy, curvature = test(net)
+        torch.save(net.state_dict(), './model/{}_{}_l={}_{}hesse.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch))
+    Loss_Fig = np.array(Loss_Fig)
+    sns.lineplot(x="batch", y="Loss", data=Loss_Fig)
+    plt.savefig('./{}_{}_l={}_{}hesse.png'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch))
+    # file.close()
