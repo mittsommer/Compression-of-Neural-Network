@@ -89,9 +89,9 @@ if __name__ == '__main__':
     acc = []
     for i in range(10):
         device = setup(CFG.device)
-        train_loader, test_loader = getData(CFG.dataset, CFG.batch_size)
+        train_loader, test_loader, valid_loader = getData(CFG.dataset, CFG.batch_size)
         net = getModel(CFG.model, device)
-        net.load_state_dict(torch.load('./model/{}_{}_l={}_{}hesse.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch)))
+        net.load_state_dict(torch.load('./model/{}_{}_l={}_hesse.pth'.format(CFG.dataset, CFG.model, CFG.l, CFG.epoch)))
         # plot_all_weights(net)
         my_loss_function = MyLoss()
         CrossEntropy = nn.CrossEntropyLoss()
