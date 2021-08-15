@@ -10,18 +10,20 @@ from pytorchtools import EarlyStopping
 import os
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--batch_size", default=1024, type=int)
+parser.add_argument("--batch_size", default=256, type=int)
 parser.add_argument("--learning_rate", default=0.001, type=float)
-parser.add_argument("--epoch", default=200, type=int)
-parser.add_argument("--l", default=0.9999, help="lambda", type=float)
-parser.add_argument("--gpu", default=True, type=bool)
-parser.add_argument("--dataset", default='MNIST')
-parser.add_argument("--model", default='LeNet3_2')
-parser.add_argument("--topk", default=0.01, type=float)
+parser.add_argument("--epoch", default=10, type=int)
+parser.add_argument("--l", default=0.999, help="lambda", type=float)
+parser.add_argument("--gpu", default=False, type=bool)
+parser.add_argument("--dataset", default='cifar10')
+parser.add_argument("--model", default='Model_on_cifar10')
+parser.add_argument("--topk", default=0.000001, type=float)
 # parser.add_argument("--time", default=6, type=int)
 CFG = parser.parse_args()
 
 result_path = './result/{}/{}'.format(CFG.model, CFG.l)
+if not os.path.exists(result_path):
+    os.makedirs(result_path)
 
 
 def train(net, epochs):
@@ -42,21 +44,13 @@ def train(net, epochs):
             data = data.to(device)
             target = target.to(device)
             optimizer.zero_grad()
-            # s = time.time()
             output = net.forward(data).to(device)
-            # e = time.time()
-            # print("forward time:{}".format(e - s))
-            # s = time.time()
             loss, cross_entropy, curvature = my_loss_function(output, target, batch_idx, epoch)
-            # e = time.time()
-            # print("loss time:{}".format(e-s))
-            # s = time.time()
             loss.backward()
-            # e = time.time()
-            # print("backward time:{}".format(e-s))
             optimizer.step()
             train_losses.append(loss.item())
             train_cross_entropies.append(cross_entropy)
+            # print('batch_idx: {}/{} Curvature: {:.6f}'.format(batch_idx, len(train_loader), curvature))
         net.eval()  # prep model for evaluation
         for batch_idx, (data, target) in enumerate(valid_loader):
             data = data.to(device)
@@ -133,10 +127,11 @@ class MyLoss(nn.Module):
     def forward(self, x, y, batch_idx=None, epoch=None):
         cross_entropy = CrossEntropy(x, y)
         # calculate first order derivative of all weights
-        first_grad = torch.autograd.grad(cross_entropy, net.parameters(), create_graph=True)
-        curvature = eval_hessian_topk(first_grad, net, CFG.topk)
-        # calculate second order grad derivative of every weight -- Hesse matrix diagonal
-        ''''''
+        first_grad = torch.autograd.grad(cross_entropy, net.parameters(), create_graph=True, retain_graph=True)
+        if CFG.topk == 1.0:
+            curvature = hessian(first_grad, net, device)
+        else:
+            curvature = hessian_topk(first_grad, net, CFG.topk)
         '''
         if batch_idx == len(train_loader):
             plot_hesse(hesse, epoch)'''
@@ -145,10 +140,7 @@ class MyLoss(nn.Module):
 
 if __name__ == '__main__':
     print(CFG)
-    if CFG.gpu:
-        device = setup('cuda:0')
-    else:
-        device = setup('cpu')
+    device = setup(CFG.gpu)
     train_loader, test_loader, valid_loader = getData(CFG.dataset, CFG.batch_size)
     net = getModel(CFG.model, device)
     if CFG.gpu:
