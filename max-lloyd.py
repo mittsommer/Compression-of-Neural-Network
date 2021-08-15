@@ -38,17 +38,6 @@ transformer = torchvision.transforms.Compose([torchvision.transforms.ToTensor()]
 test_data = CIFAR10('./data', train=False, download=True, transform=transformer)
 test_loader = DataLoader(test_data, batch_size=CFG['batch_size'], shuffle=True)
 
-net = torch.load('./model/lambda={}.pth'.format(CFG['lambda']))
-parm = list(net.parameters())
-weights = parm[0].view(-1)
-for i, p in enumerate(parm):
-    if i == 0:
-        continue
-    if i % 2 == 0:
-        weights = torch.cat([weights, p.view(-1)])
-weights_mean = torch.mean(weights).to('cpu').detach().numpy()
-weights_var = torch.var(weights).to('cpu').detach().numpy()
-
 
 class MyLoss(nn.Module):
     def __init__(self):
@@ -105,6 +94,16 @@ def expected_normal_dist(x, mean=weights_mean, var=weights_var):
 
 
 if __name__ == '__main__':
+    net = torch.load('./model/lambda={}.pth'.format(CFG['lambda']))
+    parm = list(net.parameters())
+    weights = parm[0].view(-1)
+    for i, p in enumerate(parm):
+        if i == 0:
+            continue
+        if i % 2 == 0:
+            weights = torch.cat([weights, p.view(-1)])
+    weights_mean = torch.mean(weights).to('cpu').detach().numpy()
+    weights_var = torch.var(weights).to('cpu').detach().numpy()
     x = weights.to('cpu').detach().numpy()
     repre = LloydMaxQuantizer.start_repre(x, CFG['bit'])
     min_loss = 1.0

@@ -1,10 +1,13 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from models import LeNet3, LeNet5
+from models import *
 import torchvision
 import numpy as np
 from torch.utils.data.sampler import SubsetRandomSampler
+
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 def setup(d):
@@ -18,8 +21,8 @@ def setup(d):
 def getData(name, batch_size):
     transform = transforms.ToTensor()
     if name == 'cifar10':
-        train_data = datasets.MNIST(root='data', train=True, download=True, transform=transform)
-        test_data = datasets.MNIST(root='data', train=False, download=True, transform=transform)
+        train_data = datasets.CIFAR10(root='data', train=True, download=True, transform=transform)
+        test_data = datasets.CIFAR10(root='data', train=False, download=True, transform=transform)
     if name == 'MNIST':
         train_data = datasets.MNIST(root='data', train=True, download=True, transform=transform)
         test_data = datasets.MNIST(root='data', train=False, download=True, transform=transform)
@@ -52,31 +55,66 @@ def getData(name, batch_size):
     return train_loader, test_loader, valid_loader
 
 
-
 def getModel(name, device):
     if name == "LeNet3":
         net = LeNet3().to(device)
     if name == "LeNet5":
         net = LeNet5().to(device)
+    if name == "LeNet3_2":
+        net = LeNet3_2().to(device)
+    if name == "Model_on_cifar10":
+        net = Model_on_cifar10().to(device)
     return net
 
 
 def eval_hessian(first_grad, model, device):
-    # with torch.autograd.profiler.profile(use_cuda=True) as prof:
+    with torch.autograd.profiler.profile(use_cuda=True) as prof:
+        cnt = 0
+        for g in first_grad:
+            g_vector = g.view(-1) if cnt == 0 else torch.cat([g_vector, g.view(-1)])
+            cnt = 1
+        weights_number = g_vector.size(0)
+        hessian_matrix = torch.zeros(weights_number, weights_number).to(device)
+        for idx in range(weights_number):
+            second_grad = torch.autograd.grad(g_vector[idx], net.parameters(),retain_graph=True)
+            cnt = 0
+            for g in second_grad:
+                g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
+                cnt = 1
+            hessian_matrix[idx] = g2
+        curvature = torch.sum(torch.pow(hessian_matrix,2))
+    print(prof)
+    return curvature
+
+
+def eval_hessian_topk(first_grad, net, k):
     cnt = 0
     for g in first_grad:
         g_vector = g.view(-1) if cnt == 0 else torch.cat([g_vector, g.view(-1)])
         cnt = 1
     weights_number = g_vector.size(0)
-    hessian_matrix = torch.zeros(weights_number, weights_number).to(device)
     for idx in range(weights_number):
-        second_grad = torch.autograd.grad(g_vector[idx], model.parameters(), create_graph=True, retain_graph=True)
+        second_grad = torch.autograd.grad(g_vector[idx], net.parameters(), retain_graph=True)
         cnt = 0
         for g in second_grad:
-            g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
+            sg = g.contiguous().view(-1) if cnt == 0 else torch.cat([sg, g.contiguous().view(-1)])
             cnt = 1
-        hessian_matrix[idx] = g2
-    return hessian_matrix
+        curvature = torch.sum(torch.pow(torch.topk(sg, k=int((weights_number - idx) * k + 1))[0], 2)) \
+            if idx == 0 else curvature + torch.sum(
+            torch.pow(torch.topk(sg[idx:], k=int((weights_number - idx) * k + 1))[0], 2))
+        # print('{}/{}'.format(idx,weights_number))
+    return curvature
+
+
+def hesse_diagonal(first_grad,net):
+    second_grad = []
+    for i, parm in enumerate(net.parameters()):
+        second_grad.append(torch.autograd.grad(first_grad[i], parm, retain_graph=True, create_graph=True,
+                                               grad_outputs=torch.ones_like(first_grad[i]))[0])
+    curvature = torch.tensor(0)
+    for i in second_grad:
+        curvature = curvature + torch.sum(torch.pow(i, 2))
+    return curvature
 
 
 '''def save_log():
@@ -88,3 +126,93 @@ def eval_hessian(first_grad, model, device):
                  'accuracy'])
     log_csv = log_csv.append(log, ignore_index=True)
     log_csv.to_csv('log.csv', index=False)'''
+
+from math import e, log
+
+def compute_entropy(labels, base=None):
+    n_labels = len(labels)
+
+    if n_labels <= 1:
+        return 0
+
+    value, counts = torch.unique(labels, return_counts=True)
+    probs = counts / n_labels
+    n_classes = torch.count_nonzero(probs)
+
+    if n_classes <= 1:
+        return 0
+
+    ent = 0.
+    # Compute entropy
+    base = 2 if base is None else base
+    for i in probs:
+        ent -= i * log(i, base)
+
+    return ent
+
+
+
+def pdf(bundies,weights):
+    cluster = torch.zeros_like(weights)
+    prob = torch.zeros(len(bundies)-1)
+    for w in range(len(weights)):
+        weight = weights[w]
+        for b in range(len(bundies)-1):
+            if bundies[b] <= weight <= bundies[b+1]:
+                prob[b] += 1
+                cluster[w] = b
+    prob = prob/len(weights)
+    return cluster, prob
+
+
+def plot_hesse(hesse, epoch):
+    ax = sns.distplot((hesse.flatten()).cpu().detach().numpy(), color='b', kde=False, bins=20, hist_kws={'log': True})
+    ax.set_xlabel('Values of second derivatives')
+    ax.set_ylabel('frequences')
+    ax.set_xlim(-0.5, 0.5)
+    ax.set_ylim(10, 400000)
+    dist_fig = ax.get_figure()
+    dist_fig.savefig(result_path+'/pics/hesse_distribution_{}.png'.format(epoch))
+    plt.close()
+    bx = sns.heatmap(hesse.cpu().detach().numpy(), vmin=-0.5, vmax=0.5)
+    bx.set_xlabel('row')
+    bx.set_ylabel('column')
+    plt.title('Hesse Matrix')
+    ax.xaxis.tick_top()
+    heatmap_fig = bx.get_figure()
+    heatmap_fig.savefig(result_path+'/pics/hesse_{}.png'.format(epoch))
+    plt.close()
+
+
+def plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy):
+    fig1 = plt.figure(figsize=(10, 8))
+    plt.plot(range(1, len(train_loss) + 1), train_loss, label='Training Loss')
+    plt.plot(range(1, len(valid_loss) + 1), valid_loss, label='Validation Loss')
+    # find position of lowest validation loss
+    minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
+    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
+    plt.xlabel('epochs')
+    plt.ylabel('loss')
+    plt.ylim(0, 0.5)  # consistent scale
+    plt.xlim(0, len(train_loss) + 1)  # consistent scale
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    fig1.savefig(result_path+'/pics/{}_{}_loss.png'.format(CFG.dataset, CFG.model), bbox_inches='tight')
+    plt.close(fig1)
+
+    fig2 = plt.figure(figsize=(10, 8))
+    plt.plot(range(1, len(train_cross_entropy) + 1), train_cross_entropy, label='Training Cross Entropy')
+    plt.plot(range(1, len(valid_cross_entropy) + 1), valid_cross_entropy, label='Validation Cross Entropy')
+    # find position of lowest validation loss
+    minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
+    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
+    plt.xlabel('epochs')
+    plt.ylabel('Cross Entropy')
+    plt.ylim(0, 0.5)  # consistent scale
+    plt.xlim(0, len(train_cross_entropy) + 1)  # consistent scale
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    fig2.savefig(result_path+'/pics/{}_{}_CrossEntropy.png'.format(CFG.dataset, CFG.model), bbox_inches='tight')
+    plt.close(fig2)

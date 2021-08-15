@@ -6,21 +6,23 @@ from utils import *
 import time
 import pandas as pd
 from pytorchtools import EarlyStopping
-import matplotlib.pyplot as plt
-import seaborn as sns
+
+import os
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--batch_size", default=256, type=int)
+parser.add_argument("--batch_size", default=1024, type=int)
 parser.add_argument("--learning_rate", default=0.001, type=float)
-parser.add_argument("--epoch", default=1, type=int)
-parser.add_argument("--l", default=1.0, help="lambda", type=float)
-parser.add_argument("--device", default='cuda:0')
+parser.add_argument("--epoch", default=200, type=int)
+parser.add_argument("--l", default=0.9999, help="lambda", type=float)
+parser.add_argument("--gpu", default=True, type=bool)
 parser.add_argument("--dataset", default='MNIST')
-parser.add_argument("--model", default='LeNet3')
-parser.add_argument("--time", default=1, type=int)
+parser.add_argument("--model", default='LeNet3_2')
+parser.add_argument("--topk", default=0.01, type=float)
+# parser.add_argument("--time", default=6, type=int)
 CFG = parser.parse_args()
 
-result_path = './result/{}/{}'.format(CFG.time, CFG.l)
+result_path = './result/{}/{}'.format(CFG.model, CFG.l)
+
 
 def train(net, epochs):
     train_losses = []
@@ -32,16 +34,26 @@ def train(net, epochs):
     avg_train_cross_entropies = []
     avg_valid_cross_entropies = []
     # initialize the early_stopping object
-    early_stopping = EarlyStopping(patience=10, verbose=True, path=result_path+'/checkpoint.pt')
+    early_stopping = EarlyStopping(patience=10, verbose=True, path=result_path + '/checkpoint.pt')
     for epoch in range(1, epochs + 1):
         net.train()
+        s = time.time()
         for batch_idx, (data, target) in enumerate(train_loader):
             data = data.to(device)
             target = target.to(device)
             optimizer.zero_grad()
+            # s = time.time()
             output = net.forward(data).to(device)
+            # e = time.time()
+            # print("forward time:{}".format(e - s))
+            # s = time.time()
             loss, cross_entropy, curvature = my_loss_function(output, target, batch_idx, epoch)
+            # e = time.time()
+            # print("loss time:{}".format(e-s))
+            # s = time.time()
             loss.backward()
+            # e = time.time()
+            # print("backward time:{}".format(e-s))
             optimizer.step()
             train_losses.append(loss.item())
             train_cross_entropies.append(cross_entropy)
@@ -78,8 +90,13 @@ def train(net, epochs):
         if early_stopping.early_stop:
             print("Early stopping")
             break
+        e = time.time()
+        print("1 epoch time:{}".format(e - s))
     # load the last checkpoint with the best model
-    net.load_state_dict(torch.load(result_path+'/checkpoint.pt'))
+    if CFG.gpu:
+        net.module.load_state_dict(torch.load(result_path + '/checkpoint.pt'))
+    else:
+        net.load_state_dict(torch.load(result_path + '/checkpoint.pt'))
     return avg_train_losses, avg_valid_losses, avg_train_cross_entropies, avg_valid_cross_entropies
 
 
@@ -111,101 +128,38 @@ def test(net):
 class MyLoss(nn.Module):
     def __init__(self):
         super().__init__()
+        self.index = torch.tensor([0])
 
     def forward(self, x, y, batch_idx=None, epoch=None):
         cross_entropy = CrossEntropy(x, y)
-        # calculate first order grad derivative of all weights
-        first_grad = torch.autograd.grad(cross_entropy, net.parameters(), create_graph=True, retain_graph=True)
+        # calculate first order derivative of all weights
+        first_grad = torch.autograd.grad(cross_entropy, net.parameters(), create_graph=True)
+        curvature = eval_hessian_topk(first_grad, net, CFG.topk)
         # calculate second order grad derivative of every weight -- Hesse matrix diagonal
-        '''second_grad = []
-        for i, parm in enumerate(net.parameters()):
-            second_grad.append(torch.autograd.grad(first_grad[i], parm, retain_graph=True, create_graph=True,
-                                                   grad_outputs=torch.ones_like(first_grad[i]))[0])
-        curvature = torch.tensor(0)
-        for i in second_grad:
-            curvature = curvature + torch.sum(torch.pow(i,2))'''
-        # calculate whole Hesse matrix
-        # time_start = time.time()
-        hesse = eval_hessian(first_grad, net, device)
-        # time_end = time.time()
-        # print("hesse time:{}".format(time_end-time_start))
-        curvature = torch.sum(torch.pow(hesse, 2))
-        # curvature = torch.tensor(0)
-        '''curvature = torch.sum(torch.pow(
-            torch.topk(torch.abs(hesse.view(-1)), k=int(hesse.shape[0]**2 * 0.005))[0], 2
-        ))'''
-        '''max = torch.max(torch.abs(hesse))*0.95
-        for i in enumerate(hesse):
-            for j in i:
-                if torch.abs(j) >= max:
-                    curvature = curvature + torch.pow(j, 2)'''
-        if batch_idx == 187:
-            plot_hesse(hesse, epoch)
+        ''''''
+        '''
+        if batch_idx == len(train_loader):
+            plot_hesse(hesse, epoch)'''
         return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy.item(), curvature.item()
-
-
-def plot_hesse(hesse, epoch):
-    ax = sns.distplot((hesse.flatten()).cpu().detach().numpy(), color='b', kde=False, bins=20, hist_kws={'log': True})
-    ax.set_xlabel('Values of second derivatives')
-    ax.set_ylabel('frequences')
-    ax.set_xlim(-0.5, 0.5)
-    ax.set_ylim(10, 400000)
-    dist_fig = ax.get_figure()
-    dist_fig.savefig(result_path+'/pics/hesse_distribution_{}.png'.format(epoch))
-    plt.close()
-    bx = sns.heatmap(hesse.cpu().detach().numpy(), vmin=-0.5, vmax=0.5)
-    bx.set_xlabel('row')
-    bx.set_ylabel('column')
-    plt.title('Hesse Matrix')
-    ax.xaxis.tick_top()
-    heatmap_fig = bx.get_figure()
-    heatmap_fig.savefig(result_path+'/pics/hesse_{}.png'.format(epoch))
-    plt.close()
-
-
-def plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy):
-    fig1 = plt.figure(figsize=(10, 8))
-    plt.plot(range(1, len(train_loss) + 1), train_loss, label='Training Loss')
-    plt.plot(range(1, len(valid_loss) + 1), valid_loss, label='Validation Loss')
-    # find position of lowest validation loss
-    minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
-    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
-    plt.xlabel('epochs')
-    plt.ylabel('loss')
-    plt.ylim(0, 0.5)  # consistent scale
-    plt.xlim(0, len(train_loss) + 1)  # consistent scale
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    fig1.savefig(result_path+'/pics/{}_{}_loss.png'.format(CFG.dataset, CFG.model), bbox_inches='tight')
-    plt.close(fig1)
-
-    fig2 = plt.figure(figsize=(10, 8))
-    plt.plot(range(1, len(train_cross_entropy) + 1), train_cross_entropy, label='Training Cross Entropy')
-    plt.plot(range(1, len(valid_cross_entropy) + 1), valid_cross_entropy, label='Validation Cross Entropy')
-    # find position of lowest validation loss
-    minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
-    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
-    plt.xlabel('epochs')
-    plt.ylabel('Cross Entropy')
-    plt.ylim(0, 0.5)  # consistent scale
-    plt.xlim(0, len(train_cross_entropy) + 1)  # consistent scale
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    fig2.savefig(result_path+'/pics/{}_{}_CrossEntropy.png'.format(CFG.dataset, CFG.model), bbox_inches='tight')
-    plt.close(fig2)
 
 
 if __name__ == '__main__':
     print(CFG)
-    device = setup(CFG.device)
+    if CFG.gpu:
+        device = setup('cuda:0')
+    else:
+        device = setup('cpu')
     train_loader, test_loader, valid_loader = getData(CFG.dataset, CFG.batch_size)
     net = getModel(CFG.model, device)
+    if CFG.gpu:
+        net = nn.DataParallel(net)
     optimizer = optim.Adam(net.parameters(), CFG.learning_rate)
     my_loss_function = MyLoss()
     CrossEntropy = nn.CrossEntropyLoss()
     train_loss, valid_loss, train_cross_entropy, valid_cross_entropy = train(net, CFG.epoch)
     test(net)
-    plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy)
-    torch.save(net.state_dict(), result_path+'/{}_{}_hesse.pth'.format(CFG.dataset, CFG.model))
+    # plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy)
+    if CFG.gpu:
+        torch.save(net.module.state_dict(), result_path + '/{}_{}_hesse.pth'.format(CFG.dataset, CFG.model))
+    else:
+        torch.save(net.state_dict(), result_path + '/{}_{}_hesse.pth'.format(CFG.dataset, CFG.model))
