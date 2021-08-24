@@ -5,9 +5,9 @@ from models import *
 import torchvision
 import numpy as np
 from torch.utils.data.sampler import SubsetRandomSampler
-
 import matplotlib.pyplot as plt
 import seaborn as sns
+import math
 
 
 def setup(gpu=True):
@@ -29,6 +29,9 @@ def getData(name, batch_size):
     if name == 'MNIST':
         train_data = datasets.MNIST(root='data', train=True, download=True, transform=transform)
         test_data = datasets.MNIST(root='data', train=False, download=True, transform=transform)
+    if name == 'FashionMNIST':
+        train_data = datasets.FashionMNIST(root='data', train=True, download=True, transform=transform)
+        test_data = datasets.FashionMNIST(root='data', train=False, download=True, transform=transform)
     # percentage of training set to use as validation
     valid_size = 0.2
     # obtain training indices that will be used for validation
@@ -45,16 +48,16 @@ def getData(name, batch_size):
     train_loader = torch.utils.data.DataLoader(train_data,
                                                batch_size=batch_size,
                                                sampler=train_sampler,
-                                               num_workers=0)
+                                               num_workers=1)
     # load validation data in batches
     valid_loader = torch.utils.data.DataLoader(train_data,
                                                batch_size=batch_size,
                                                sampler=valid_sampler,
-                                               num_workers=0)
+                                               num_workers=1)
     # load test data in batches
     test_loader = torch.utils.data.DataLoader(test_data,
                                               batch_size=batch_size,
-                                              num_workers=0)
+                                              num_workers=1)
     return train_loader, test_loader, valid_loader
 
 
@@ -71,39 +74,68 @@ def getModel(name, device):
 
 
 def hessian(first_grad, net, device):
-    # with torch.autograd.profiler.profile(use_cuda=True) as prof:
     cnt = 0
-    for g in first_grad:
-        g_vector = g.view(-1) if cnt == 0 else torch.cat([g_vector, g.view(-1)])
-        cnt = 1
-    weights_number = g_vector.size(0)
-    hessian_matrix = torch.zeros(weights_number, weights_number).to(device)
+    for fg in first_grad:
+        if cnt == 0:
+            first_vector = fg.contiguous().view(-1)
+            cnt = 1
+        else:
+            first_vector = torch.cat([first_vector, fg.contiguous().view(-1)])
+    weights_number = first_vector.size(0)
+    # hessian_matrix = torch.zeros(weights_number, weights_number).to(device)
+    curvature = torch.tensor(0.).to(device)
     for idx in range(weights_number):
-        second_grad = torch.autograd.grad(g_vector[idx], net.parameters(), create_graph=True, retain_graph=True)
-        cnt = 0
+        second_grad = torch.autograd.grad(first_vector[idx], net.parameters(), create_graph=True, retain_graph=True)
+        '''cnt = 0
         for g in second_grad:
             g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
             cnt = 1
-        hessian_matrix[idx] = g2
-    curvature = torch.sum(torch.pow(hessian_matrix, 2))
-    # print(prof)
+        hessian_matrix[idx] = g2'''
+        for fg in second_grad:
+            curvature += torch.sum(torch.pow(fg,2))
     return curvature
 
 
 def hessian_topk(first_grad, net, k):
     cnt = 0
+    for fg in first_grad:
+        first_vector = fg.view(-1) if cnt == 0 else torch.cat([first_vector, fg.view(-1)])
+        cnt = 1
+    weights_number = first_vector.size(0)
+    curvature = []
+    for idx in range(weights_number):
+        second_grad = torch.autograd.grad(first_vector[idx], net.parameters(), create_graph=True, retain_graph=True)
+        cnt = 0
+        for sg in second_grad:
+            second_vector = sg.contiguous().view(-1) if cnt == 0 else torch.cat(
+                [second_vector, sg.contiguous().view(-1)])
+            cnt = 1
+        second_topk = torch.topk(second_vector, k=int((weights_number - idx) * k + 1))[0]
+
+        curvature.append(torch.pow(second_topk, 2))
+        '''curvature = torch.sum(torch.pow(second_topk, 2)) if idx == 0 else curvature + torch.sum(
+            torch.pow(second_topk, 2))'''
+
+        # print('{}/{}'.format(idx,weights_number))
+    return torch.sum(torch.tensor(curvature))
+
+
+def hessian_random_topk(first_grad, net, k):
+    cnt = 0
     for g in first_grad:
         first_vector = g.view(-1) if cnt == 0 else torch.cat([first_vector, g.view(-1)])
         cnt = 1
     weights_number = first_vector.size(0)
-    for idx in range(weights_number):
+    random_idx = torch.randint(0, weights_number - 1, (int(0.001 * weights_number),))
+    for idx in random_idx:
         second_grad = torch.autograd.grad(first_vector[idx], net.parameters(), create_graph=True, retain_graph=True)
         cnt = 0
         for g in second_grad:
             second_vector = g.contiguous().view(-1) if cnt == 0 else torch.cat([second_vector, g.contiguous().view(-1)])
             cnt = 1
         curvature = torch.sum(torch.pow(torch.topk(second_vector, k=int((weights_number - idx) * k + 1))[0], 2)) \
-            if idx == 0 else curvature + torch.sum(torch.pow(torch.topk(second_vector[idx:], k=int((weights_number - idx) * k + 1))[0], 2))
+            if idx == random_idx[0] else curvature + torch.sum(
+            torch.pow(torch.topk(second_vector[idx:], k=int((weights_number - idx) * k + 1))[0], 2))
         # print('{}/{}'.format(idx,weights_number))
     return curvature
 
@@ -129,28 +161,21 @@ def hesse_diagonal(first_grad, net):
     log_csv = log_csv.append(log, ignore_index=True)
     log_csv.to_csv('log.csv', index=False)'''
 
-from math import e, log
-
 
 def compute_entropy(labels, base=None):
     n_labels = len(labels)
-
     if n_labels <= 1:
         return 0
-
     value, counts = torch.unique(labels, return_counts=True)
     probs = counts / n_labels
     n_classes = torch.count_nonzero(probs)
-
     if n_classes <= 1:
         return 0
-
     ent = 0.
     # Compute entropy
     base = 2 if base is None else base
     for i in probs:
-        ent -= i * log(i, base)
-
+        ent -= i * math.log(i, base)
     return ent
 
 
@@ -195,12 +220,12 @@ def plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy, 
     plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
     plt.xlabel('epochs')
     plt.ylabel('loss')
-    plt.ylim(0, 0.5)  # consistent scale
+    #plt.ylim(0, 0.5)  # consistent scale
     plt.xlim(0, len(train_loss) + 1)  # consistent scale
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    fig1.savefig(result_path + '/pics/{}_{}_loss.png'.format(CFG.dataset, CFG.model), bbox_inches='tight')
+    fig1.savefig(result_path + '/loss.png', bbox_inches='tight')
     plt.close(fig1)
 
     fig2 = plt.figure(figsize=(10, 8))
@@ -211,10 +236,91 @@ def plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy, 
     plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
     plt.xlabel('epochs')
     plt.ylabel('Cross Entropy')
-    plt.ylim(0, 0.5)  # consistent scale
+    #plt.ylim(0, 0.5)  # consistent scale
     plt.xlim(0, len(train_cross_entropy) + 1)  # consistent scale
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    fig2.savefig(result_path + '/pics/{}_{}_CrossEntropy.png'.format(CFG.dataset, CFG.model), bbox_inches='tight')
+    fig2.savefig(result_path + '/CrossEntropy.png', bbox_inches='tight')
     plt.close(fig2)
+
+
+def plot_weights(model):
+    modules = [module for module in model.modules()]
+    num_sub_plot = 0
+    for i, layer in enumerate(modules):
+        if hasattr(layer, 'weight'):
+            plt.subplot(131 + num_sub_plot)
+            w = layer.weight.data
+            w_one_dim = w.cpu().numpy().flatten()
+            plt.hist(w_one_dim[w_one_dim != 0], bins=50)
+            num_sub_plot += 1
+    plt.show()
+
+
+def plot_all_weights(model):
+    modules = [module for module in model.modules()]
+    all_weights = torch.tensor([])
+    for i, layer in enumerate(modules):
+        if hasattr(layer, 'weight'):
+            w = layer.weight.data.view(-1).cpu()
+            all_weights = torch.cat((all_weights, w))
+    '''plt.plot()
+    plt.hist(all_weights.cpu().numpy(), bins=50)
+    plt.draw()'''
+    sns.histplot(all_weights.cpu().numpy())
+    plt.show()
+
+
+class EarlyStopping:
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+    def __init__(self, patience=7, verbose=False, delta=0, path='checkpoint.pt', trace_func=print, gpu=True):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+                            Default: 7
+            verbose (bool): If True, prints a message for each validation loss improvement.
+                            Default: False
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+                            Default: 0
+            path (str): Path for the checkpoint to be saved to.
+                            Default: 'checkpoint.pt'
+            trace_func (function): trace print function.
+                            Default: print
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+        self.path = path
+        self.trace_func = trace_func
+        self.gpu = gpu
+    def __call__(self, val_loss, model):
+
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            self.trace_func(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        '''Saves model when validation loss decrease.'''
+        if self.verbose:
+            self.trace_func(f'Validation Cross Entropy decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
+        if self.gpu:
+            torch.save(model.module.state_dict(), self.path)
+        else:
+            torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
