@@ -2,33 +2,34 @@ import torch.optim as optim
 import argparse
 from utils import *
 import time
-import os,sys
+import os, sys
+
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--batch_size", default=256, type=int)
+parser.add_argument("--batch_size", default=1024, type=int)
 parser.add_argument("--learning_rate", default=0.001, type=float)
-parser.add_argument("--epoch", default=200, type=int)
+parser.add_argument("--epoch", default=30, type=int)
 parser.add_argument("--l", default=1.0, help="lambda", type=float)
-parser.add_argument("--gpu", default=True, type=bool)
-parser.add_argument("--dataset", default='FashionMNIST')
-parser.add_argument("--model", default='LeNet5')
-parser.add_argument("--topk", default=1.0, type=float)  # if topk == 1.0 use the whole hesse matrix
-parser.add_argument("--time", default=5, type=int)
+parser.add_argument("--gpu", action='store_false', default=True)
+parser.add_argument("--dataset", default='MNIST')
+parser.add_argument("--model", default='LeNet3')
+parser.add_argument("--time", default='1', type=str)
 CFG = parser.parse_args()
 
 result_path = './result/{}_{}/time{}/lambda_{}'.format(CFG.model, CFG.dataset, CFG.time, CFG.l)
+result_path_pic = result_path + '/pic'
 if not os.path.exists(result_path):
     os.makedirs(result_path)
+    os.makedirs(result_path_pic)
 
 
 def train(net, epochs):
     train_losses, valid_losses, train_cross_entropies, valid_cross_entropies = [], [], [], []
     avg_train_losses, avg_valid_losses, avg_train_cross_entropies, avg_valid_cross_entropies = [], [], [], []
     # initialize the early_stopping object
-    early_stopping = EarlyStopping(patience=7, verbose=True, path=result_path + '/checkpoint.pt', gpu=CFG.gpu)
+    '''early_stopping = EarlyStopping(patience=5, verbose=True, path=result_path + '/checkpoint.pt', gpu=CFG.gpu)'''
     for epoch in range(1, epochs + 1):
         net.train()
-        s = time.time()
         for batch_idx, (data, target) in enumerate(train_loader):
             '''s = time.time()'''
             data = data.to(device)
@@ -40,8 +41,12 @@ def train(net, epochs):
             optimizer.step()
             train_losses.append(loss.item())
             train_cross_entropies.append(cross_entropy)
-            '''e = time.time()
-            print("1 batch time:{:.0f}s".format(e - s))'''
+            '''e = time.time()'''
+            '''if batch_idx == 0 and epoch == 1:
+                print("1 batch time:{:.0f}s".format(e - s))'''
+            '''if batch_idx % 20 == 0:
+                print('Train Batch: [{}/{}]  train_loss: {:.6f} train_CrossEntropy: {:.6f} '
+                  'Curvature: {:.6f}'.format(batch_idx, len(train_loader), loss.item(), cross_entropy, curvature))'''
         net.eval()  # prep model for evaluation
         for batch_idx, (data, target) in enumerate(valid_loader):
             data = data.to(device)
@@ -63,19 +68,22 @@ def train(net, epochs):
                                                                     curvature))
         # clear lists to track next epoch
         train_losses, valid_losses, train_cross_entropies, valid_cross_entropies = [], [], [], []
+        test(net)
+        torch.save(net.module.state_dict(), result_path + '/epoch_{}.pth'.format(epoch))
         # early_stopping needs the validation loss to check if it has decresed,
         # and if it has, it will make a checkpoint of the current model
-        early_stopping(valid_cross_entropy, net)
+        '''early_stopping(valid_cross_entropy, net)
         if early_stopping.early_stop:
             print("Early stopping")
-            break
-        e = time.time()
-        print("1 epoch time:{:.0f}s".format(e - s))
+            break'''
+        '''e = time.time()
+        print("1 epoch time:{:.0f}s".format(e - s))'''
+
     # load the last checkpoint with the best model
-    if CFG.gpu:
+    '''if CFG.gpu:
         net.module.load_state_dict(torch.load(result_path + '/checkpoint.pt'))
     else:
-        net.load_state_dict(torch.load(result_path + '/checkpoint.pt'))
+        net.load_state_dict(torch.load(result_path + '/checkpoint.pt'))'''
     return avg_train_losses, avg_valid_losses, avg_train_cross_entropies, avg_valid_cross_entropies
 
 
@@ -108,22 +116,22 @@ class MyLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, x, y, batch_idx=None, epoch=None):
+    def forward(self, x, y, batch_idx=None, epoch=None, is_test=False):
         cross_entropy = CrossEntropy(x, y)
         if CFG.l == 1.0:
             curvature = torch.tensor(0)
         else:
             # calculate first order derivative of all weights
             first_grad = torch.autograd.grad(cross_entropy, net.parameters(), create_graph=True, retain_graph=True)
-            if CFG.topk == 1.0:
-                curvature = hessian(first_grad, net, device)
-            else:
-                curvature = hessian_random_topk(first_grad, net, CFG.topk)
+            hesse = hessian(first_grad, net, device)
+            curvature = torch.sum(torch.pow(hesse, 2))
+            if batch_idx == len(train_loader):
+                plot_hesse(hesse, epoch, result_path_pic)
         return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy.item(), curvature.item()
 
 
 class Logger(object):
-    def __init__(self, filename=result_path+'/train.log', stream=sys.stdout):
+    def __init__(self, filename=result_path + '/train.log', stream=sys.stdout):
         self.terminal = stream
         self.log = open(filename, 'a')
 
@@ -138,12 +146,12 @@ class Logger(object):
 if __name__ == '__main__':
     sys.stdout = Logger(stream=sys.stdout)
     print(CFG)
-    device = setup(gpu=CFG.gpu)
+    device = set_device(gpu=CFG.gpu)
     train_loader, test_loader, valid_loader = getData(CFG.dataset, CFG.batch_size)
     net = getModel(CFG.model, device)
     if CFG.gpu:
         net = nn.DataParallel(net)
-    optimizer = optim.Adam(net.parameters(), CFG.learning_rate,weight_decay=0.0001)
+    optimizer = optim.Adam(net.parameters(), CFG.learning_rate, weight_decay=0.0001)
     my_loss_function = MyLoss()
     CrossEntropy = nn.CrossEntropyLoss()
     train_loss, valid_loss, train_cross_entropy, valid_cross_entropy = train(net, CFG.epoch)

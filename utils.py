@@ -10,7 +10,7 @@ import seaborn as sns
 import math
 
 
-def setup(gpu=True):
+def set_device(gpu=True):
     """SEED = 0
     torch.manual_seed(SEED)
     torch.cuda.manual_seed(SEED)"""
@@ -64,13 +64,40 @@ def getData(name, batch_size):
 def getModel(name, device):
     if name == "LeNet3":
         net = LeNet3().to(device)
-    if name == "LeNet5":
-        net = LeNet5().to(device)
     if name == "LeNet3_2":
         net = LeNet3_2().to(device)
-    if name == "Model_on_cifar10":
-        net = Model_on_cifar10().to(device)
+    if name == "LeNet3_3":
+        net = LeNet3_3().to(device)
+    if name == "LeNet3_4":
+        net = LeNet3_4().to(device)
+    if name == "LeNet_5":
+        net = LeNet_5().to(device)
+    if name == "alexnet":
+        net = AlexNet().to(device)
+
     return net
+
+
+def quantiz_test(net, dataset, batch_size, device):
+    net.eval()
+    train_loader, test_loader, valid_loader = getData(dataset, batch_size)
+    test_loss = 0
+    correct = 0
+    criterion = nn.CrossEntropyLoss()
+    for data, target in test_loader:
+        data = data.to(device)
+        target = target.to(device)
+        output = net(data).to(device)
+        t = criterion(output, target)
+        test_loss += t.item()
+        pred = output.data.max(1, keepdim=True)[1]
+        correct += pred.eq(target.data.view_as(pred)).sum().item()
+    test_loss /= len(test_loader)
+    accuracy = 100. * correct / len(test_loader.dataset)
+    print('\nTest set: Avg. loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(test_loss, correct,
+                                                                              len(test_loader.dataset),
+                                                                              accuracy))
+    return test_loss, accuracy
 
 
 def hessian(first_grad, net, device):
@@ -82,18 +109,15 @@ def hessian(first_grad, net, device):
         else:
             first_vector = torch.cat([first_vector, fg.contiguous().view(-1)])
     weights_number = first_vector.size(0)
-    # hessian_matrix = torch.zeros(weights_number, weights_number).to(device)
-    curvature = torch.tensor(0.).to(device)
+    hessian_matrix = torch.zeros(weights_number, weights_number).to(device)
     for idx in range(weights_number):
         second_grad = torch.autograd.grad(first_vector[idx], net.parameters(), create_graph=True, retain_graph=True)
-        '''cnt = 0
+        cnt = 0
         for g in second_grad:
             g2 = g.contiguous().view(-1) if cnt == 0 else torch.cat([g2, g.contiguous().view(-1)])
             cnt = 1
-        hessian_matrix[idx] = g2'''
-        for fg in second_grad:
-            curvature += torch.sum(torch.pow(fg,2))
-    return curvature
+        hessian_matrix[idx] = g2
+    return hessian_matrix
 
 
 def hessian_topk(first_grad, net, k):
@@ -140,7 +164,7 @@ def hessian_random_topk(first_grad, net, k):
     return curvature
 
 
-def hesse_diagonal(first_grad, net):
+def hessian_diagonal(first_grad, net,device):
     second_grad = []
     for i, parm in enumerate(net.parameters()):
         second_grad.append(torch.autograd.grad(first_grad[i], parm, retain_graph=True, create_graph=True,
@@ -199,7 +223,7 @@ def plot_hesse(hesse, epoch, result_path):
     ax.set_xlim(-0.5, 0.5)
     ax.set_ylim(10, 400000)
     dist_fig = ax.get_figure()
-    dist_fig.savefig(result_path + '/pics/hesse_distribution_{}.png'.format(epoch))
+    dist_fig.savefig(result_path + '/hesse_distribution_{}.png'.format(epoch))
     plt.close()
     bx = sns.heatmap(hesse.cpu().detach().numpy(), vmin=-0.5, vmax=0.5)
     bx.set_xlabel('row')
@@ -207,7 +231,7 @@ def plot_hesse(hesse, epoch, result_path):
     plt.title('Hesse Matrix')
     ax.xaxis.tick_top()
     heatmap_fig = bx.get_figure()
-    heatmap_fig.savefig(result_path + '/pics/hesse_{}.png'.format(epoch))
+    heatmap_fig.savefig(result_path + '/hesse_{}.png'.format(epoch))
     plt.close()
 
 
@@ -216,8 +240,8 @@ def plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy, 
     plt.plot(range(1, len(train_loss) + 1), train_loss, label='Training Loss')
     plt.plot(range(1, len(valid_loss) + 1), valid_loss, label='Validation Loss')
     # find position of lowest validation loss
-    minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
-    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
+    '''minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
+    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')'''
     plt.xlabel('epochs')
     plt.ylabel('loss')
     #plt.ylim(0, 0.5)  # consistent scale
@@ -232,8 +256,8 @@ def plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy, 
     plt.plot(range(1, len(train_cross_entropy) + 1), train_cross_entropy, label='Training Cross Entropy')
     plt.plot(range(1, len(valid_cross_entropy) + 1), valid_cross_entropy, label='Validation Cross Entropy')
     # find position of lowest validation loss
-    minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
-    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')
+    '''minposs = valid_cross_entropy.index(min(valid_cross_entropy)) + 1
+    plt.axvline(minposs, linestyle='--', color='r', label='Early Stopping Checkpoint')'''
     plt.xlabel('epochs')
     plt.ylabel('Cross Entropy')
     #plt.ylim(0, 0.5)  # consistent scale
@@ -245,7 +269,7 @@ def plot_loss(train_loss, valid_loss, train_cross_entropy, valid_cross_entropy, 
     plt.close(fig2)
 
 
-def plot_weights(model):
+def plot_weights(model,result_path):
     modules = [module for module in model.modules()]
     num_sub_plot = 0
     for i, layer in enumerate(modules):
@@ -255,72 +279,19 @@ def plot_weights(model):
             w_one_dim = w.cpu().numpy().flatten()
             plt.hist(w_one_dim[w_one_dim != 0], bins=50)
             num_sub_plot += 1
-    plt.show()
+    plt.savefig(result_path)
 
 
-def plot_all_weights(model):
+def plot_all_weights(model, result_path):
     modules = [module for module in model.modules()]
+    modules = modules[1:]
     all_weights = torch.tensor([])
     for i, layer in enumerate(modules):
         if hasattr(layer, 'weight'):
             w = layer.weight.data.view(-1).cpu()
             all_weights = torch.cat((all_weights, w))
-    '''plt.plot()
-    plt.hist(all_weights.cpu().numpy(), bins=50)
-    plt.draw()'''
-    sns.histplot(all_weights.cpu().numpy())
-    plt.show()
+    sns.histplot(all_weights.cpu().numpy(),bins=50)
+    plt.savefig(result_path, bbox_inches='tight')
+    plt.close()
 
 
-class EarlyStopping:
-    """Early stops the training if validation loss doesn't improve after a given patience."""
-    def __init__(self, patience=7, verbose=False, delta=0, path='checkpoint.pt', trace_func=print, gpu=True):
-        """
-        Args:
-            patience (int): How long to wait after last time validation loss improved.
-                            Default: 7
-            verbose (bool): If True, prints a message for each validation loss improvement.
-                            Default: False
-            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
-                            Default: 0
-            path (str): Path for the checkpoint to be saved to.
-                            Default: 'checkpoint.pt'
-            trace_func (function): trace print function.
-                            Default: print
-        """
-        self.patience = patience
-        self.verbose = verbose
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.val_loss_min = np.Inf
-        self.delta = delta
-        self.path = path
-        self.trace_func = trace_func
-        self.gpu = gpu
-    def __call__(self, val_loss, model):
-
-        score = -val_loss
-
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model)
-        elif score < self.best_score + self.delta:
-            self.counter += 1
-            self.trace_func(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model)
-            self.counter = 0
-
-    def save_checkpoint(self, val_loss, model):
-        '''Saves model when validation loss decrease.'''
-        if self.verbose:
-            self.trace_func(f'Validation Cross Entropy decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-        if self.gpu:
-            torch.save(model.module.state_dict(), self.path)
-        else:
-            torch.save(model.state_dict(), self.path)
-        self.val_loss_min = val_loss
