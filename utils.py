@@ -175,17 +175,6 @@ def hessian_diagonal(first_grad, net,device):
     return curvature
 
 
-'''def save_log():
-    log_csv = pd.read_csv('./log.csv')
-    log = pd.DataFrame(
-        [[CFG['batch_size'], CFG['learning_rate'], CFG['epoch'], CFG['lambda'], round(test_loss, 6),
-          round(crossentropy, 6), round(curvature, 6), accuracy]],
-        columns=['batch_size', 'learning_rate', 'epoch', 'lambda', 'test_loss', 'crossentropy', 'curvature',
-                 'accuracy'])
-    log_csv = log_csv.append(log, ignore_index=True)
-    log_csv.to_csv('log.csv', index=False)'''
-
-
 def compute_entropy(labels, base=None):
     n_labels = len(labels)
     if n_labels <= 1:
