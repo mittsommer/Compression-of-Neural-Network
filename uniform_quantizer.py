@@ -66,12 +66,9 @@ def Quantization_with_uniform_quantizer(e, module, dataset, batch_size, device, 
         after_loss, after_acc = quantiz_test(net, dataset, batch_size, device)
         result_level.append(after_loss)
         result_level.append(after_acc)
-        result_level.append(entropy)
-        result_level.append(compression_rate)
         result_levels.append(result_level)
     result = pd.DataFrame(result_levels,
-                          columns=['loss_before', 'acc_before', 'loss_after', 'acc_after', 'entropy',
-                                   'compression_ratio'],
+                          columns=['loss_before', 'acc_before', 'loss_after', 'acc_after'],
                           index=quantiz_level)
     result.to_csv(result_path + '/quantiz/uniformdquantizer_{}.csv'.format(e))
 
