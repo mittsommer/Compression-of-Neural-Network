@@ -48,10 +48,6 @@ def Quantization_with_uniform_quantizer(e, module, dataset, batch_size, device, 
 
         parm_ = net.named_parameters()
         temp = torch.from_numpy(Y)
-        entropy = compute_entropy(temp).item()
-        print('Entropy:', entropy)
-        compression_rate = 32 / entropy
-        print('Compression rate:', compression_rate)
         for name, param in parm_:
             netweight = operator.attrgetter(name)(net)
             size = 1
@@ -86,20 +82,18 @@ class ACO:
         Ant Colony Optimization
         parameter: a list type, like [NGEN, pop_size, var_num_min, var_num_max]
         """
-        # 初始化
-        self.NGEN = parameters[0]  # 迭代的代数
-        self.pop_size = parameters[1]  # 种群大小
-        self.var_num = 1  # 变量个数
-        self.bound = []  # 变量的约束范围
+        self.NGEN = parameters[0]
+        self.pop_size = parameters[1]
+        self.var_num = 1
+        self.bound = []
         self.bound.append(parameters[2])
         self.bound.append(parameters[3])
         self.qlevels = parameters[4]
         self.weights = parameters[5]
 
-        self.pop_x = np.zeros(self.pop_size)  # 所有蚂蚁的位置
-        self.g_best = np.zeros(1)  # 全局蚂蚁最优的位置
+        self.pop_x = np.zeros(self.pop_size)
+        self.g_best = np.zeros(1)
 
-        # 初始化第0代初始全局最优解
         for i in range(self.pop_size):
             self.pop_x[i] = np.random.uniform(self.bound[0], self.bound[1])
             fit = self.fitness(self.pop_x[i])
@@ -111,9 +105,6 @@ class ACO:
                     temp = fit
 
     def fitness(self, pop_x):
-        """
-        个体适应值计算
-        """
         m = np.zeros(self.qlevels + 1)
         meanv = sum(self.weights) / self.weights.size
         for i in range(int(self.qlevels / 2 + 1)):
@@ -133,29 +124,22 @@ class ACO:
         return mseloss
 
     def update_operator(self, gen, t, t_max):
-        """
-        更新算子：根据概率更新下一时刻的位置
-        """
-        rou = 0.8  # 信息素挥发系数
-        Q = 1  # 信息释放总量
+        rou = 0.8
+        Q = 1
         lamda = 1 / gen
         pi = np.zeros(self.pop_size)
         for i in range(self.pop_size):
             pi[i] = (t_max - t[i]) / t_max
-            # 更新位置
             if pi[i] < np.random.uniform(0, 1):
                 self.pop_x[i] = self.pop_x[i] + np.random.uniform(-1, 1) * lamda
             else:
                 self.pop_x[i] = self.pop_x[i] + np.random.uniform(-1, 1) * (
                         self.bound[1] - self.bound[0]) / 2
-            # 越界保护
             if self.pop_x[i] < self.bound[0]:
                 self.pop_x[i] = self.bound[0]
             if self.pop_x[i] > self.bound[1]:
                 self.pop_x[i] = self.bound[1]
-            # 更新t值
             t[i] = (1 - rou) * t[i] + Q * self.fitness(self.pop_x[i])
-            # 更新全局最优值
             if self.fitness(self.pop_x[i]) < self.fitness(self.g_best):
                 self.g_best = self.pop_x[i]
         t_max = np.max(t)
@@ -176,16 +160,8 @@ class ACO:
             # print(self.fitness(self.g_best))
             if self.fitness(self.g_best) < self.fitness(best):
                 best = self.g_best.copy()
-        #     print('最好的步长：{}'.format(best))
-        #     print('最小的loss：{}'.format(self.fitness(best)))
+        #     print('Best step size：{}'.format(best))
+        #     print('Min loss：{}'.format(self.fitness(best)))
         # print("---- End of (successful) Searching ----")
-
-        # plt.figure()
-        # plt.title("Figure1")
-        # plt.xlabel("iterators", size=14)
-        # plt.ylabel("fitness", size=14)
-        # t = [t for t in range(1, self.NGEN + 1)]
-        # plt.plot(t, popobj, color='b', linewidth=2)
-        # plt.show()
 
         return best
