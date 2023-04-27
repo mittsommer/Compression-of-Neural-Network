@@ -6,13 +6,14 @@ import os, sys
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--batch_size", default=1024, type=int)
+parser.add_argument("--batch_size", default=256, type=int)
 parser.add_argument("--learning_rate", default=0.001, type=float)
 parser.add_argument("--epoch", default=30, type=int)
-parser.add_argument("--l", default=1.0, help="lambda", type=float)
-parser.add_argument("--gpu", action='store_true', default=True)
+parser.add_argument("--l", default=0.999, help="lambda", type=float)
+parser.add_argument("--epcilon", default=0.01, help="lambda", type=float)
+parser.add_argument("--gpu", action='store_true', default=False)
 parser.add_argument("--dataset", default='MNIST')
-parser.add_argument("--model", default='LeNet3_3')
+parser.add_argument("--model", default='LeNet3')
 parser.add_argument("--time", default='5', type=str)
 CFG = parser.parse_args()
 
@@ -44,9 +45,9 @@ def train(net, epochs):
             '''e = time.time()'''
             '''if batch_idx == 0 and epoch == 1:
                 print("1 batch time:{:.0f}s".format(e - s))'''
-            '''if batch_idx % 20 == 0:
+            if batch_idx % 20 == 0:
                 print('Train Batch: [{}/{}]  train_loss: {:.6f} train_CrossEntropy: {:.6f} '
-                  'Curvature: {:.6f}'.format(batch_idx, len(train_loader), loss.item(), cross_entropy, curvature))'''
+                  'Curvature: {:.6f}'.format(batch_idx, len(train_loader), loss.item(), cross_entropy, curvature))
         net.eval()  # prep model for evaluation
         for batch_idx, (data, target) in enumerate(valid_loader):
             data = data.to(device)
@@ -69,7 +70,10 @@ def train(net, epochs):
         # clear lists to track next epoch
         train_losses, valid_losses, train_cross_entropies, valid_cross_entropies = [], [], [], []
         test(net)
-        torch.save(net.module.state_dict(), result_path + '/epoch_{}.pth'.format(epoch))
+        if CFG.gpu:
+            torch.save(net.module.state_dict(), result_path + '/epoch_{}.pth'.format(epoch))
+        else:
+            torch.save(net.state_dict(), result_path + '/{}_{}_{}.pth'.format(CFG.dataset, CFG.model, CFG.l))
         # early_stopping needs the validation loss to check if it has decresed,
         # and if it has, it will make a checkpoint of the current model
         '''early_stopping(valid_cross_entropy, net)
@@ -111,7 +115,6 @@ def test(net):
                                                                               len(test_loader.dataset), accuracy))
     return test_loss, crossentropy, accuracy
 
-
 class MyLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -123,11 +126,13 @@ class MyLoss(nn.Module):
         else:
             # calculate first order derivative of all weights
             first_grad = torch.autograd.grad(cross_entropy, net.parameters(), create_graph=True, retain_graph=True)
-            hesse = hessian(first_grad, net, device)
-            curvature = torch.sum(torch.pow(hesse, 2))
-            if batch_idx == len(train_loader):
-                plot_hesse(hesse, epoch, result_path_pic)
+            curvature = second_order_approximation(first_grad, CFG.epcilon, net)
+            # curvature = torch.sum(torch.pow(hesse, 2))
+            # if batch_idx == len(train_loader):
+            #     plot_hesse(hesse, epoch, result_path_pic)
+
         return cross_entropy * CFG.l + curvature * (1 - CFG.l), cross_entropy.item(), curvature.item()
+
 
 
 class Logger(object):

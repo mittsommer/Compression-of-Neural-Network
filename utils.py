@@ -27,8 +27,8 @@ def getData(name, batch_size):
         train_data = datasets.CIFAR10(root='data', train=True, download=True, transform=transform)
         test_data = datasets.CIFAR10(root='data', train=False, download=True, transform=transform)
     if name == 'MNIST':
-        train_data = datasets.MNIST(root='data', train=True, download=True, transform=transform)
-        test_data = datasets.MNIST(root='data', train=False, download=True, transform=transform)
+        train_data = datasets.MNIST(root='data', train=True, download=False, transform=transform)
+        test_data = datasets.MNIST(root='data', train=False, download=False, transform=transform)
     if name == 'FashionMNIST':
         train_data = datasets.FashionMNIST(root='data', train=True, download=True, transform=transform)
         test_data = datasets.FashionMNIST(root='data', train=False, download=True, transform=transform)
@@ -119,6 +119,25 @@ def hessian(first_grad, net, device):
         hessian_matrix[idx] = g2
     return hessian_matrix
 
+def second_order_approximation(first_grad, epsilon, net):
+    cnt = 0
+    for fg in first_grad:
+        if cnt == 0:
+            first_grad_vector = fg.contiguous().view(-1)
+            cnt = 1
+        else:
+            first_grad_vector = torch.cat([first_grad_vector, fg.contiguous().view(-1)])
+    weights_number = first_grad_vector.size(0)
+    second_grad = []
+    for i, parm in enumerate(net.parameters()):
+        second_grad.append(torch.autograd.grad(first_grad[i], parm, retain_graph=True, create_graph=True,
+                                               grad_outputs=torch.ones_like(first_grad[i]))[0])
+    second_grad_vector = torch.cat([t.view(-1) for t in second_grad])
+    hessian_app = []
+    for i in range(weights_number):
+        for j in range(weights_number):
+            hessian_app.append((-first_grad_vector[i] - first_grad_vector[j]) / epsilon - second_grad_vector[i] - second_grad_vector[j])
+    return torch.sum(torch.pow(torch.tensor(hessian_app),2))
 
 def hessian_topk(first_grad, net, k):
     cnt = 0
